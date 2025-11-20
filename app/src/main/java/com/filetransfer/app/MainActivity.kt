@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.filetransfer.app
 
 import android.Manifest
@@ -48,10 +50,6 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
-
-@file:OptIn(
-    ExperimentalMaterial3Api::class
-)
 
 class MainActivity : ComponentActivity() {
 
