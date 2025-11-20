@@ -1,7 +1,3 @@
-@file:OptIn(
-    androidx.compose.material3.ExperimentalMaterial3Api::class,
-    androidx.compose.material.ExperimentalMaterialApi::class
-)
 
 package com.filetransfer.app
 
