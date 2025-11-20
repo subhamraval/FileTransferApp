@@ -14,11 +14,17 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      - name: Verify Java
+        run: |
+          java -version
+          echo "JAVA_HOME=$JAVA_HOME"
+          which java || true
 
       - name: Make gradlew executable if present
         run: |
@@ -38,8 +44,6 @@ jobs:
             sudo apt-get install -y gradle
             gradle :app:assembleRelease --no-daemon
           fi
-        env:
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
 
       - name: Upload APK artifact (v4)
         uses: actions/upload-artifact@v4
