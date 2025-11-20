@@ -12,8 +12,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -46,6 +49,10 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 
+@file:OptIn(
+    ExperimentalMaterial3Api::class
+)
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,7 +71,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -------------------------------
-    // Auto-detect SD card UUIDs
+    // Utilities: SD detection & path resolvers
     // -------------------------------
     private fun getSdCardPaths(): List<String> {
         val storageDir = File("/storage")
@@ -75,23 +82,138 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resolveRealPathFromTreeUri(uri: Uri): String? {
-        val docId = DocumentsContract.getTreeDocumentId(uri)
-        val split = docId.split(":")
+        try {
+            val treeId = DocumentsContract.getTreeDocumentId(uri)
+            val parts = treeId.split(":")
+            if (parts.isEmpty()) return null
+            val storageId = parts[0]
+            val relative = if (parts.size > 1) parts.subList(1, parts.size).joinToString(":") else ""
 
-        if (split.size < 2) return null
+            // find matching storage mount under /storage
+            val mounts = File("/storage").listFiles()?.filter { it.isDirectory }?.map { it.absolutePath } ?: emptyList()
+            val mount = mounts.find { it.contains(storageId, ignoreCase = true) } ?: return null
 
-        val uuid = split[0]
-        val relativePath = split[1]
-
-        val sdPaths = getSdCardPaths()
-        val sdRoot = sdPaths.find { it.contains(uuid, ignoreCase = true) }
-
-        return if (sdRoot != null) {
-            "$sdRoot/$relativePath"
-        } else null
+            return if (relative.isBlank()) mount else File(mount, relative).absolutePath
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
     }
 
-        // -------------------------------
+    private fun resolveRealPathFromDocumentUri(docUri: Uri): String? {
+        try {
+            val docId = DocumentsContract.getDocumentId(docUri)
+            val parts = docId.split(":")
+            if (parts.isEmpty()) return null
+            val storageId = parts[0]
+            val relative = if (parts.size > 1) parts.subList(1, parts.size).joinToString(":") else ""
+
+            val mounts = File("/storage").listFiles()?.filter { it.isDirectory }?.map { it.absolutePath } ?: emptyList()
+            val mount = mounts.find { it.contains(storageId, ignoreCase = true) } ?: return null
+
+            return if (relative.isBlank()) mount else File(mount, relative).absolutePath
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+    }
+
+    private fun getRealPath(uri: Uri): String? {
+        // tree URI (folder)
+        if (uri.toString().contains("tree")) {
+            return resolveRealPathFromTreeUri(uri)
+        }
+
+        // document URI (single file)
+        if (uri.authority == "com.android.externalstorage.documents" || uri.toString().contains("document")) {
+            return resolveRealPathFromDocumentUri(uri)
+        }
+
+        if (uri.scheme == "file") return uri.path
+
+        return null
+    }
+
+    // -------------------------------
+    // Timestamp helpers
+    // -------------------------------
+    private fun normalizeTimestampMs(value: Long): Long {
+        // If it looks like seconds (10-digit-ish), convert to ms
+        return if (value in 1_000_000_000L..999_999_999_999L) value * 1000L else value
+    }
+
+    /**
+     * Try to read last-modified from a document/content Uri.
+     * Returns 0 if unavailable. Normalizes to milliseconds.
+     */
+    private fun getLastModifiedFromUri(uri: Uri): Long {
+        try {
+            contentResolver.query(
+                uri,
+                arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    if (idx != -1) {
+                        val v = cursor.getLong(idx)
+                        if (v > 0L) return normalizeTimestampMs(v)
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+
+        try {
+            contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATE_MODIFIED),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                    if (idx != -1) {
+                        val v = cursor.getLong(idx)
+                        if (v > 0L) return normalizeTimestampMs(v)
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val possibleNames = listOf("last_modified", "modified", "date_modified", "datemodified")
+                    for (name in possibleNames) {
+                        val idx = cursor.getColumnIndex(name)
+                        if (idx != -1) {
+                            try {
+                                val v = cursor.getLong(idx)
+                                if (v > 0L) return normalizeTimestampMs(v)
+                            } catch (_: Exception) { }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+
+        return 0L
+    }
+
+    // -------------------------------
+    // SAF update helper
+    // -------------------------------
+    private fun updateLastModifiedSaf(uri: Uri, lastModified: Long) {
+        try {
+            val values = ContentValues().apply {
+                put(DocumentsContract.Document.COLUMN_LAST_MODIFIED, lastModified)
+            }
+            contentResolver.update(uri, values, null, null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    // -------------------------------
     // UI Theme & Main Screen
     // -------------------------------
     @Composable
@@ -147,7 +269,7 @@ class MainActivity : ComponentActivity() {
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
-            // no-op; we request to show the prompt
+            // no-op
         }
 
         LaunchedEffect(Unit) {
@@ -262,7 +384,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -------------------------------
-    // Reusable UI components
+    // UI components (same as earlier)
     // -------------------------------
     @Composable
     fun AnimatedHeader() {
@@ -342,7 +464,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-        @Composable
+    @Composable
     fun SelectionCard(
         title: String,
         fileName: String,
@@ -482,9 +604,7 @@ class MainActivity : ComponentActivity() {
                 CircularProgressIndicator(
                     progress = progress,
                     modifier = Modifier.size(80.dp),
-                    color = Color(0xFF6366F1),
-                    strokeWidth = 6.dp,
-                    trackColor = Color(0xFF334155)
+                    strokeWidth = 6.dp
                 )
                 Text(
                     text = "${(progress * 100).toInt()}%",
@@ -578,35 +698,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-        // -------------------------------
-    // SAF Timestamp Update (Fallback)
     // -------------------------------
-    private fun updateLastModifiedSaf(uri: Uri, lastModified: Long) {
-        try {
-            val values = ContentValues().apply {
-                put(DocumentsContract.Document.COLUMN_LAST_MODIFIED, lastModified)
-            }
-            contentResolver.update(uri, values, null, null)
-        } catch (_: Exception) { }
-    }
-
-    // -------------------------------
-    // REAL PATH Resolver for SD Card + Internal Storage
-    // -------------------------------
-    private fun getRealPath(uri: Uri): String? {
-        // SAF tree URI → SD card or Internal storage
-        if (uri.toString().contains("tree")) {
-            return resolveRealPathFromTreeUri(uri)
-        }
-
-        // Normal content file → copy to temp, no real path (fallback only)
-        if (uri.scheme == "content") return null
-
-        return uri.path
-    }
-
-    // -------------------------------
-    // MAIN FILE TRANSFER FUNCTION
+    // Main transferFile with diagnostics and timestamp handling
     // -------------------------------
     private suspend fun transferFile(
         sourceUri: Uri,
@@ -616,32 +709,32 @@ class MainActivity : ComponentActivity() {
     ): Boolean = withContext(Dispatchers.IO) {
 
         try {
-            // Get Names
             val srcName = getFileName(sourceUri)
 
-            // Get REAL paths (if possible)
-            val realSourcePath = getRealPath(sourceUri)
+            // read timestamp from provider and normalize
+            val possibleLastModified = getLastModifiedFromUri(sourceUri)
+            val sourceFallbackFile = getFileFromUri(sourceUri)
+            val lastModifiedToUse = when {
+                possibleLastModified > 0L -> possibleLastModified
+                sourceFallbackFile != null -> sourceFallbackFile.lastModified()
+                else -> System.currentTimeMillis()
+            }
+
+            val realSource = getRealPath(sourceUri)
             val realDestFolder = getRealPath(destUri)
 
-            // Get timestamp of original file
-            val tempSourceFile = getFileFromUri(sourceUri)
-            val originalLastModified = tempSourceFile?.lastModified() ?: 0L
+            // DIRECT FILE COPY path (best)
+            if (realSource != null && realDestFolder != null && (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager())) {
+                Log.d("FTApp", "Using DIRECT file copy. src=$realSource destFolder=$realDestFolder")
 
-            // ---------------------------------------------------------
-            // 1) BEST CASE → Real paths exist → DIRECT FILE COPY
-            // ---------------------------------------------------------
-            if (realSourcePath != null && realDestFolder != null) {
-
-                val srcFile = File(realSourcePath)
+                val srcFile = File(realSource)
                 val dstFile = File(realDestFolder, srcName)
 
                 FileInputStream(srcFile).use { input ->
                     FileOutputStream(dstFile).use { output ->
-
                         val buffer = ByteArray(10240)
                         var total = 0L
-                        val size = srcFile.length().coerceAtLeast(1)
-
+                        val size = srcFile.length().coerceAtLeast(1L)
                         while (true) {
                             val read = input.read(buffer)
                             if (read == -1) break
@@ -655,17 +748,29 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // → TIMESTAMP PRESERVED PERFECTLY
-                dstFile.setLastModified(originalLastModified)
+                val setOk = try {
+                    dstFile.setLastModified(lastModifiedToUse)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    false
+                }
 
-                if (isMove) srcFile.delete()
+                Log.d("FTApp", "setLastModified returned=$setOk destTs=${dstFile.lastModified()} expected=$lastModifiedToUse")
+
+                if (!setOk) {
+                    val alt = normalizeTimestampMs(lastModifiedToUse)
+                    dstFile.setLastModified(alt)
+                    Log.d("FTApp", "Retry setLastModified alt=$alt destTs=${dstFile.lastModified()}")
+                }
+
+                if (isMove) {
+                    try { srcFile.delete() } catch (_: Exception) { }
+                }
 
                 return@withContext true
             }
 
-            // ---------------------------------------------------------
-            // 2) SAF CASE → Fallback using DocumentsContract
-            // ---------------------------------------------------------
+            // SAF fallback
             val destDocUri = DocumentsContract.buildDocumentUriUsingTree(
                 destUri,
                 DocumentsContract.getTreeDocumentId(destUri)
@@ -682,11 +787,9 @@ class MainActivity : ComponentActivity() {
 
             contentResolver.openInputStream(sourceUri)?.use { input ->
                 contentResolver.openOutputStream(newFileUri)?.use { output ->
-
                     val buffer = ByteArray(8192)
                     var total = 0L
-                    val size = tempSourceFile?.length()?.coerceAtLeast(1L) ?: 1L
-
+                    val size = sourceFallbackFile?.length()?.coerceAtLeast(1L) ?: 1L
                     while (true) {
                         val read = input.read(buffer)
                         if (read == -1) break
@@ -700,12 +803,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Fallback timestamp update
-            updateLastModifiedSaf(newFileUri, originalLastModified)
+            updateLastModifiedSaf(newFileUri, lastModifiedToUse)
+            Log.d("FTApp", "Requested SAF update for $newFileUri to $lastModifiedToUse")
+
+            try {
+                val check = getLastModifiedFromUri(newFileUri)
+                Log.d("FTApp", "After SAF update — provider reports lastModified=$check (expected $lastModifiedToUse)")
+            } catch (_: Exception) { }
 
             if (isMove) {
-                try { DocumentsContract.deleteDocument(contentResolver, sourceUri) }
-                catch (_: Exception) {}
+                try { DocumentsContract.deleteDocument(contentResolver, sourceUri) } catch (_: Exception) { }
             }
 
             true
@@ -717,7 +824,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -------------------------------
-    // Convert URI → File (fallback)
+    // URI -> File conversion (fallback)
     // -------------------------------
     private fun getFileFromUri(uri: Uri): File? {
         return try {
@@ -739,25 +846,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // -------------------------------
-    // Get file name
-    // -------------------------------
     private fun getFileName(uri: Uri): String {
         var name = ""
-
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) {
                 val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 if (idx != -1) name = cursor.getString(idx)
             }
         }
-
         return name.ifEmpty { "unknown_file" }
     }
 
-    // -------------------------------
-    // Get folder name for UI
-    // -------------------------------
     private fun getDirectoryName(uri: Uri): String {
         return uri.lastPathSegment?.substringAfter(":") ?: "Selected Folder"
     }
