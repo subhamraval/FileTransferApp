@@ -25,17 +25,17 @@ jobs:
           java -version
           echo "JAVA_HOME=$JAVA_HOME"
 
-      - name: Install required system packages (unzip, xargs, coreutils)
+      - name: Install unzip (required for Gradle zip)
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip xargs coreutils
+          sudo apt-get install -y unzip
 
       - name: Download and extract Gradle 8.4
         run: |
           GRADLE_VERSION=8.4
           wget https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip -O gradle.zip
           unzip gradle.zip -d /tmp
-          ls -la /tmp/gradle-${GRADLE_VERSION}/bin
+          echo "Gradle downloaded at /tmp/gradle-${GRADLE_VERSION}"
 
       - name: Build with Gradle (prefer wrapper if present)
         env:
