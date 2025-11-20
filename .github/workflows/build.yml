@@ -1,4 +1,4 @@
-name: Android CI (use downloaded Gradle)
+name: Android CI (download Gradle safely)
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -24,26 +25,29 @@ jobs:
           java -version
           echo "JAVA_HOME=$JAVA_HOME"
 
-      - name: Download Gradle 8.4
+      - name: Install required system packages (unzip, xargs, coreutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip xargs coreutils
+
+      - name: Download and extract Gradle 8.4
         run: |
           GRADLE_VERSION=8.4
           wget https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip -O gradle.zip
           unzip gradle.zip -d /tmp
-          export GRADLE_HOME=/tmp/gradle-${GRADLE_VERSION}
-          echo "GRADLE_HOME=$GRADLE_HOME"
-          ls -la $GRADLE_HOME/bin
+          ls -la /tmp/gradle-${GRADLE_VERSION}/bin
 
-      - name: Build with downloaded Gradle (:app:assembleRelease)
+      - name: Build with Gradle (prefer wrapper if present)
         env:
-          GRADLE_HOME: /tmp/gradle-8.4
           PATH: /tmp/gradle-8.4/bin:$PATH
         run: |
           set -e
-          # prefer wrapper if present
           if [ -f ./gradlew ]; then
             chmod +x ./gradlew
+            echo "Using project Gradle wrapper"
             ./gradlew :app:assembleRelease --no-daemon
           else
+            echo "Using downloaded Gradle 8.4"
             /tmp/gradle-8.4/bin/gradle :app:assembleRelease --no-daemon
           fi
 
