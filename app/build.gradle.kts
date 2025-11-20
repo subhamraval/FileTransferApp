@@ -35,8 +35,13 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = "17"
+    jvmTarget = "17"
+    freeCompilerArgs += listOf(
+        "-Xopt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+        "-Xopt-in=androidx.compose.material.ExperimentalMaterialApi"
+     )
     }
+
 
     buildFeatures {
         compose = true
