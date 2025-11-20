@@ -41,13 +41,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         setContent {
             FileTransferTheme {
                 Surface(
@@ -60,6 +63,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // -------------------------------
+    // Auto-detect SD card UUIDs
+    // -------------------------------
+    private fun getSdCardPaths(): List<String> {
+        val storageDir = File("/storage")
+        return storageDir.listFiles()
+            ?.filter { it.isDirectory && it.name.matches(Regex("[A-F0-9]{4}-[A-F0-9]{4}")) }
+            ?.map { it.absolutePath }
+            ?: emptyList()
+    }
+
+    private fun resolveRealPathFromTreeUri(uri: Uri): String? {
+        val docId = DocumentsContract.getTreeDocumentId(uri)
+        val split = docId.split(":")
+
+        if (split.size < 2) return null
+
+        val uuid = split[0]
+        val relativePath = split[1]
+
+        val sdPaths = getSdCardPaths()
+        val sdRoot = sdPaths.find { it.contains(uuid, ignoreCase = true) }
+
+        return if (sdRoot != null) {
+            "$sdRoot/$relativePath"
+        } else null
+    }
+
+        // -------------------------------
+    // UI Theme & Main Screen
+    // -------------------------------
     @Composable
     fun FileTransferTheme(content: @Composable () -> Unit) {
         MaterialTheme(
@@ -113,9 +147,7 @@ class MainActivity : ComponentActivity() {
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
-            if (permissions.values.all { it }) {
-                // Permissions granted
-            }
+            // no-op; we request to show the prompt
         }
 
         LaunchedEffect(Unit) {
@@ -143,17 +175,14 @@ class MainActivity : ComponentActivity() {
             ) {
                 Spacer(modifier = Modifier.height(32.dp))
 
-                // Header with animation
                 AnimatedHeader()
 
                 Spacer(modifier = Modifier.height(48.dp))
 
-                // Operation Type Toggle
                 OperationTypeSelector(operationType) { operationType = it }
 
                 Spacer(modifier = Modifier.height(32.dp))
 
-                // Source Selection Card
                 SelectionCard(
                     title = "Select Source File",
                     fileName = sourceName,
@@ -164,12 +193,10 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Arrow Animation
                 AnimatedArrow(isProcessing)
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Destination Selection Card
                 SelectionCard(
                     title = "Select Destination Folder",
                     fileName = destName,
@@ -180,7 +207,6 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(40.dp))
 
-                // Action Button
                 ActionButton(
                     text = if (operationType == "copy") "Copy File" else "Move File",
                     enabled = sourceUri != null && destUri != null && !isProcessing,
@@ -214,13 +240,11 @@ class MainActivity : ComponentActivity() {
                     }
                 )
 
-                // Progress Indicator
                 if (isProcessing) {
                     Spacer(modifier = Modifier.height(24.dp))
                     CircularProgressWithPercentage(progress)
                 }
 
-                // Success Animation
                 AnimatedVisibility(
                     visible = showSuccess,
                     enter = scaleIn() + fadeIn(),
@@ -229,7 +253,6 @@ class MainActivity : ComponentActivity() {
                     SuccessIndicator()
                 }
 
-                // Error Message
                 errorMessage?.let {
                     Spacer(modifier = Modifier.height(16.dp))
                     ErrorMessage(it)
@@ -238,6 +261,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // -------------------------------
+    // Reusable UI components
+    // -------------------------------
     @Composable
     fun AnimatedHeader() {
         val infiniteTransition = rememberInfiniteTransition(label = "header")
@@ -316,7 +342,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable
+        @Composable
     fun SelectionCard(
         title: String,
         fileName: String,
@@ -381,11 +407,11 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun AnimatedArrow(isAnimating: Boolean) {
+    fun AnimatedArrow(isProcessing: Boolean) {
         val infiniteTransition = rememberInfiniteTransition(label = "arrow")
         val offsetY by infiniteTransition.animateFloat(
             initialValue = 0f,
-            targetValue = if (isAnimating) 10f else 0f,
+            targetValue = if (isProcessing) 10f else 0f,
             animationSpec = infiniteRepeatable(
                 animation = tween(800, easing = LinearEasing),
                 repeatMode = RepeatMode.Reverse
@@ -456,7 +482,9 @@ class MainActivity : ComponentActivity() {
                 CircularProgressIndicator(
                     progress = progress,
                     modifier = Modifier.size(80.dp),
-                    strokeWidth = 6.dp
+                    color = Color(0xFF6366F1),
+                    strokeWidth = 6.dp,
+                    trackColor = Color(0xFF334155)
                 )
                 Text(
                     text = "${(progress * 100).toInt()}%",
@@ -524,7 +552,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestPermissions(launcher: androidx.activity.result.ActivityResultLauncher<Array<String>>) {
+    // -------------------------------
+    // Permissions (Android 11+ SAF)
+    // -------------------------------
+    private fun requestPermissions(
+        launcher: androidx.activity.result.ActivityResultLauncher<Array<String>>
+    ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
@@ -533,176 +566,199 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             val permissions = mutableListOf<String>()
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) 
-                != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) 
-                != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            }
-            if (permissions.isNotEmpty()) {
-                launcher.launch(permissions.toTypedArray())
-            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED
+            ) permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED
+            ) permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+
+            if (permissions.isNotEmpty()) launcher.launch(permissions.toTypedArray())
         }
     }
 
+        // -------------------------------
+    // SAF Timestamp Update (Fallback)
+    // -------------------------------
+    private fun updateLastModifiedSaf(uri: Uri, lastModified: Long) {
+        try {
+            val values = ContentValues().apply {
+                put(DocumentsContract.Document.COLUMN_LAST_MODIFIED, lastModified)
+            }
+            contentResolver.update(uri, values, null, null)
+        } catch (_: Exception) { }
+    }
+
+    // -------------------------------
+    // REAL PATH Resolver for SD Card + Internal Storage
+    // -------------------------------
+    private fun getRealPath(uri: Uri): String? {
+        // SAF tree URI → SD card or Internal storage
+        if (uri.toString().contains("tree")) {
+            return resolveRealPathFromTreeUri(uri)
+        }
+
+        // Normal content file → copy to temp, no real path (fallback only)
+        if (uri.scheme == "content") return null
+
+        return uri.path
+    }
+
+    // -------------------------------
+    // MAIN FILE TRANSFER FUNCTION
+    // -------------------------------
     private suspend fun transferFile(
         sourceUri: Uri,
         destUri: Uri,
         isMove: Boolean,
         onProgress: (Float) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            // Try to get last modified time from URI metadata (works for document/content URIs)
-            val possibleLastModified = getLastModifiedFromUri(sourceUri)
-            val sourceFile = getFileFromUri(sourceUri) ?: return@withContext false
-            val fileName = sourceFile.name
-            // prefer metadata lastModified if available, else fall back to file lastModified
-            val lastModified = if (possibleLastModified > 0L) possibleLastModified else sourceFile.lastModified()
 
+        try {
+            // Get Names
+            val srcName = getFileName(sourceUri)
+
+            // Get REAL paths (if possible)
+            val realSourcePath = getRealPath(sourceUri)
+            val realDestFolder = getRealPath(destUri)
+
+            // Get timestamp of original file
+            val tempSourceFile = getFileFromUri(sourceUri)
+            val originalLastModified = tempSourceFile?.lastModified() ?: 0L
+
+            // ---------------------------------------------------------
+            // 1) BEST CASE → Real paths exist → DIRECT FILE COPY
+            // ---------------------------------------------------------
+            if (realSourcePath != null && realDestFolder != null) {
+
+                val srcFile = File(realSourcePath)
+                val dstFile = File(realDestFolder, srcName)
+
+                FileInputStream(srcFile).use { input ->
+                    FileOutputStream(dstFile).use { output ->
+
+                        val buffer = ByteArray(10240)
+                        var total = 0L
+                        val size = srcFile.length().coerceAtLeast(1)
+
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            total += read
+                            withContext(Dispatchers.Main) {
+                                onProgress(total.toFloat() / size.toFloat())
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+
+                // → TIMESTAMP PRESERVED PERFECTLY
+                dstFile.setLastModified(originalLastModified)
+
+                if (isMove) srcFile.delete()
+
+                return@withContext true
+            }
+
+            // ---------------------------------------------------------
+            // 2) SAF CASE → Fallback using DocumentsContract
+            // ---------------------------------------------------------
             val destDocUri = DocumentsContract.buildDocumentUriUsingTree(
                 destUri,
                 DocumentsContract.getTreeDocumentId(destUri)
             )
 
-            val mimeType = contentResolver.getType(sourceUri) ?: "*/*"
+            val mime = contentResolver.getType(sourceUri) ?: "application/octet-stream"
+
             val newFileUri = DocumentsContract.createDocument(
                 contentResolver,
                 destDocUri,
-                mimeType,
-                fileName
+                mime,
+                srcName
             ) ?: return@withContext false
 
             contentResolver.openInputStream(sourceUri)?.use { input ->
                 contentResolver.openOutputStream(newFileUri)?.use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    var totalBytes = 0L
-                    val fileSize = sourceFile.length().coerceAtLeast(1L)
 
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        totalBytes += bytesRead
+                    val buffer = ByteArray(8192)
+                    var total = 0L
+                    val size = tempSourceFile?.length()?.coerceAtLeast(1L) ?: 1L
+
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        output.write(buffer, 0, read)
+                        total += read
                         withContext(Dispatchers.Main) {
-                            onProgress(totalBytes.toFloat() / fileSize)
+                            onProgress(total.toFloat() / size.toFloat())
                         }
                     }
                     output.flush()
                 }
             }
 
-            // Preserve timestamp for SAF/document URIs (best-effort)
-            updateLastModified(newFileUri, lastModified)
+            // Fallback timestamp update
+            updateLastModifiedSaf(newFileUri, originalLastModified)
 
             if (isMove) {
-                try {
-                    DocumentsContract.deleteDocument(contentResolver, sourceUri)
-                } catch (ignored: Exception) {}
+                try { DocumentsContract.deleteDocument(contentResolver, sourceUri) }
+                catch (_: Exception) {}
             }
 
             true
+
         } catch (e: Exception) {
             e.printStackTrace()
             false
         }
     }
 
-    /**
-     * Best-effort: Update the last-modified metadata of a document Uri.
-     * On many document providers this will succeed; on some it will be ignored.
-     */
-    private fun updateLastModified(uri: Uri, lastModified: Long) {
-        try {
-            val values = ContentValues().apply {
-                put(DocumentsContract.Document.COLUMN_LAST_MODIFIED, lastModified)
-            }
-            contentResolver.update(uri, values, null, null)
-        } catch (e: Exception) {
-            // ignore — some providers don't support updating metadata
-            e.printStackTrace()
-        }
-    }
-
-    /**
-     * Try to read last-modified from a document/content Uri.
-     * Returns 0 if unavailable.
-     */
-    private fun getLastModifiedFromUri(uri: Uri): Long {
-        try {
-            // Try DocumentsContract column (works for many DocumentProvider URIs)
-            contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)
-                ?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        val idx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                        if (idx != -1) {
-                            val valLong = cursor.getLong(idx)
-                            if (valLong > 0L) return valLong
-                        }
-                    }
-                }
-        } catch (_: Exception) {
-        }
-
-        try {
-            // Fallback: try to query file's last modified via OpenableColumns (not always available)
-            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    // Some providers expose a column named "last_modified" (not standardized) - try common names
-                    val possibleNames = listOf("last_modified", "modified", "date_modified")
-                    for (name in possibleNames) {
-                        val idx = cursor.getColumnIndex(name)
-                        if (idx != -1) {
-                            try {
-                                val v = cursor.getLong(idx)
-                                if (v > 0L) return v
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-
-        return 0L
-    }
-
+    // -------------------------------
+    // Convert URI → File (fallback)
+    // -------------------------------
     private fun getFileFromUri(uri: Uri): File? {
         return try {
-            // Try to resolve display name and copy to cache if it's a content URI
-            if (uri.scheme == "content") {
+            if (uri.scheme == "file") {
+                File(uri.path!!)
+            } else if (uri.scheme == "content") {
                 val name = getFileName(uri)
-                val tempFile = File(cacheDir, name)
+                val tmp = File(cacheDir, name)
                 contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(tempFile).use { output ->
+                    FileOutputStream(tmp).use { output ->
                         input.copyTo(output)
                     }
                 }
-                tempFile
-            } else {
-                val path = uri.path ?: return null
-                File(path)
-            }
+                tmp
+            } else null
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
     }
 
+    // -------------------------------
+    // Get file name
+    // -------------------------------
     private fun getFileName(uri: Uri): String {
         var name = ""
+
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) {
-                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (nameIndex != -1) {
-                    name = cursor.getString(nameIndex)
-                }
+                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx != -1) name = cursor.getString(idx)
             }
         }
-        return name.ifEmpty { "Unknown" }
+
+        return name.ifEmpty { "unknown_file" }
     }
 
+    // -------------------------------
+    // Get folder name for UI
+    // -------------------------------
     private fun getDirectoryName(uri: Uri): String {
-        return uri.lastPathSegment?.substringAfterLast(':') ?: "Selected Folder"
+        return uri.lastPathSegment?.substringAfter(":") ?: "Selected Folder"
     }
 }
