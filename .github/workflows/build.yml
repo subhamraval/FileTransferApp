@@ -1,4 +1,4 @@
-name: Android CI (use Gradle Action)
+name: Android CI (Gradle Action with explicit gradle-version)
 
 on:
   push:
@@ -25,10 +25,11 @@ jobs:
           java -version
           echo "JAVA_HOME=$JAVA_HOME"
 
-      - name: Run Gradle build via Gradle Action (:app:assembleRelease)
+      - name: Run Gradle build via Gradle Action (explicit gradle-version)
         uses: gradle/gradle-build-action@v2
         with:
-          arguments: ":app:assembleRelease"
+          gradle-version: '8.4'          # <-- IMPORTANT: downloads & uses Gradle 8.4
+          arguments: ':app:assembleRelease'
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
