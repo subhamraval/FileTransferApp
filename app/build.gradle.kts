@@ -37,8 +37,8 @@ android {
     kotlinOptions {
     jvmTarget = "17"
     freeCompilerArgs += listOf(
-        "-Xopt-in=androidx.compose.material3.ExperimentalMaterial3Api",
-        "-Xopt-in=androidx.compose.material.ExperimentalMaterialApi"
+        "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+        "-opt-in=androidx.compose.material.ExperimentalMaterialApi"
      )
     }
 
