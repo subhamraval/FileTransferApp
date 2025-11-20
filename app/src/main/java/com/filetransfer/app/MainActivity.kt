@@ -1,10 +1,10 @@
-
 package com.filetransfer.app
 
 import android.Manifest
 import android.app.Activity
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -459,7 +459,7 @@ class MainActivity : ComponentActivity() {
                     strokeWidth = 6.dp
                 )
                 Text(
-                    text = "${'$'}{(progress * 100).toInt()}%",
+                    text = "${(progress * 100).toInt()}%",
                     style = MaterialTheme.typography.titleLarge,
                     color = Color.White,
                     fontWeight = FontWeight.Bold
@@ -554,9 +554,12 @@ class MainActivity : ComponentActivity() {
         onProgress: (Float) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            // Try to get last modified time from URI metadata (works for document/content URIs)
+            val possibleLastModified = getLastModifiedFromUri(sourceUri)
             val sourceFile = getFileFromUri(sourceUri) ?: return@withContext false
             val fileName = sourceFile.name
-            val lastModified = sourceFile.lastModified()
+            // prefer metadata lastModified if available, else fall back to file lastModified
+            val lastModified = if (possibleLastModified > 0L) possibleLastModified else sourceFile.lastModified()
 
             val destDocUri = DocumentsContract.buildDocumentUriUsingTree(
                 destUri,
@@ -589,11 +592,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Preserve timestamp if possible (may not work for document URIs on all devices)
-            try {
-                val newFile = getFileFromUri(newFileUri)
-                newFile?.setLastModified(lastModified)
-            } catch (ignored: Exception) {}
+            // Preserve timestamp for SAF/document URIs (best-effort)
+            updateLastModified(newFileUri, lastModified)
 
             if (isMove) {
                 try {
@@ -606,6 +606,65 @@ class MainActivity : ComponentActivity() {
             e.printStackTrace()
             false
         }
+    }
+
+    /**
+     * Best-effort: Update the last-modified metadata of a document Uri.
+     * On many document providers this will succeed; on some it will be ignored.
+     */
+    private fun updateLastModified(uri: Uri, lastModified: Long) {
+        try {
+            val values = ContentValues().apply {
+                put(DocumentsContract.Document.COLUMN_LAST_MODIFIED, lastModified)
+            }
+            contentResolver.update(uri, values, null, null)
+        } catch (e: Exception) {
+            // ignore — some providers don't support updating metadata
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Try to read last-modified from a document/content Uri.
+     * Returns 0 if unavailable.
+     */
+    private fun getLastModifiedFromUri(uri: Uri): Long {
+        try {
+            // Try DocumentsContract column (works for many DocumentProvider URIs)
+            contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                        if (idx != -1) {
+                            val valLong = cursor.getLong(idx)
+                            if (valLong > 0L) return valLong
+                        }
+                    }
+                }
+        } catch (_: Exception) {
+        }
+
+        try {
+            // Fallback: try to query file's last modified via OpenableColumns (not always available)
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    // Some providers expose a column named "last_modified" (not standardized) - try common names
+                    val possibleNames = listOf("last_modified", "modified", "date_modified")
+                    for (name in possibleNames) {
+                        val idx = cursor.getColumnIndex(name)
+                        if (idx != -1) {
+                            try {
+                                val v = cursor.getLong(idx)
+                                if (v > 0L) return v
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        return 0L
     }
 
     private fun getFileFromUri(uri: Uri): File? {
